@@ -1,0 +1,13 @@
+# Global ignores
+node_modules/
+.env
+.DS_Store
+
+# Editor directories
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

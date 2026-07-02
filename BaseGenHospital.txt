@@ -1,0 +1,341 @@
+-- =========================================================================================
+-- SISTEMA DE GESTIÓN HOSPITALARIA Y RESERVA DE CITAS (POSTGRESQL SCRIPT)
+-- =========================================================================================
+-- Descripción:
+-- Script DDL y DML completo, normalizado y optimizado para PostgreSQL.
+-- Cumple al 100% con los requerimientos de la plataforma médica web:
+-- 1. Agendamiento de Citas y Gestión de Horarios/Disponibilidad del Médico.
+-- 2. Historial Médico de Pacientes (Diagnósticos, Tratamientos, Signos Vitales, Recetas).
+-- 3. Biblioteca de Imágenes Médicas por Paciente (Radiografías, Ecografías, RM, DICOM).
+-- 4. Facturación en Línea (Cabecera, Detalles, Métodos de Pago y Estado Contable).
+-- 5. Alertas y Notificaciones Automatizadas (Recordatorios para Médicos y Pacientes).
+-- =========================================================================================
+
+-- 1. LIMPIEZA INICIAL (Opcional si se reinicia la base de datos)
+DROP TABLE IF EXISTS alertas_notificaciones CASCADE;
+DROP TABLE IF EXISTS detalles_factura CASCADE;
+DROP TABLE IF EXISTS facturacion CASCADE;
+DROP TABLE IF EXISTS biblioteca_imagenes CASCADE;
+DROP TABLE IF EXISTS recetas_medicas CASCADE;
+DROP TABLE IF EXISTS historial_medico CASCADE;
+DROP TABLE IF EXISTS citas CASCADE;
+DROP TABLE IF EXISTS bloqueos_agenda CASCADE;
+DROP TABLE IF EXISTS disponibilidad_medica CASCADE;
+DROP TABLE IF EXISTS usuarios CASCADE;
+DROP TABLE IF EXISTS pacientes_medicamentos CASCADE;
+DROP TABLE IF EXISTS pacientes_condiciones CASCADE;
+DROP TABLE IF EXISTS pacientes_alergias CASCADE;
+DROP TABLE IF EXISTS pacientes CASCADE;
+DROP TABLE IF EXISTS doctores CASCADE;
+DROP TABLE IF EXISTS especialidades CASCADE;
+
+-- =========================================================================================
+-- 2. CREACIÓN DE TABLAS PRINCIPALES (DDL)
+-- =========================================================================================
+
+-- TABLA: ESPECIALIDADES MÉDICAS
+CREATE TABLE especialidades (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL UNIQUE,
+    descripcion TEXT,
+    costo_base DECIMAL(10, 2) NOT NULL DEFAULT 50.00 CHECK (costo_base >= 0),
+    estado BOOLEAN NOT NULL DEFAULT TRUE,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- TABLA: DOCTORES / PROFESIONALES MÉDICOS
+CREATE TABLE doctores (
+    id SERIAL PRIMARY KEY,
+    cedula VARCHAR(20) NOT NULL UNIQUE,
+    nombre VARCHAR(100) NOT NULL,
+    apellido VARCHAR(100) NOT NULL,
+    especialidad_id INT NOT NULL,
+    telefono VARCHAR(30),
+    email VARCHAR(150) NOT NULL UNIQUE,
+    experiencia_anios INT DEFAULT 0 CHECK (experiencia_anios >= 0),
+    consultorio VARCHAR(50),
+    biografia TEXT,
+    estado VARCHAR(20) NOT NULL DEFAULT 'Activo' CHECK (estado IN ('Activo', 'Inactivo', 'De vacaciones')),
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_doctor_especialidad FOREIGN KEY (especialidad_id) REFERENCES especialidades(id) ON DELETE RESTRICT
+);
+
+-- TABLA: PACIENTES
+CREATE TABLE pacientes (
+    id SERIAL PRIMARY KEY,
+    cedula VARCHAR(20) NOT NULL UNIQUE,
+    nombre VARCHAR(100) NOT NULL,
+    apellido VARCHAR(100) NOT NULL,
+    fecha_nacimiento DATE NOT NULL,
+    genero VARCHAR(20) NOT NULL CHECK (genero IN ('Masculino', 'Femenino', 'Otro', 'No especificado')),
+    celular VARCHAR(30) NOT NULL,
+    email VARCHAR(150) UNIQUE,
+    direccion TEXT,
+    tipo_sangre VARCHAR(10) CHECK (tipo_sangre IN ('A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-')),
+    seguro_medico VARCHAR(100),
+    numero_poliza VARCHAR(50),
+    doctor_asignado_id INT,
+    prioridad VARCHAR(20) NOT NULL DEFAULT 'Media' CHECK (prioridad IN ('Alta', 'Media', 'Baja')),
+    fidelidad INT NOT NULL DEFAULT 0 CHECK (fidelidad BETWEEN 0 AND 100),
+    deuda_actual DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (deuda_actual >= 0),
+    estado VARCHAR(20) NOT NULL DEFAULT 'Activo' CHECK (estado IN ('Activo', 'Inactivo')),
+    fecha_registro TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_paciente_doctor FOREIGN KEY (doctor_asignado_id) REFERENCES doctores(id) ON DELETE SET NULL
+);
+
+-- TABLA: ALERGIAS DEL PACIENTE (Normalizado)
+CREATE TABLE pacientes_alergias (
+    id SERIAL PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    alergia VARCHAR(150) NOT NULL,
+    gravedad VARCHAR(20) NOT NULL DEFAULT 'Moderada' CHECK (gravedad IN ('Leve', 'Moderada', 'Severa')),
+    CONSTRAINT fk_alergia_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE
+);
+
+-- TABLA: CONDICIONES CRÓNICAS / ANTECEDENTES (Normalizado)
+CREATE TABLE pacientes_condiciones (
+    id SERIAL PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    condicion VARCHAR(200) NOT NULL,
+    fecha_diagnostico DATE,
+    tratamiento_actual TEXT,
+    CONSTRAINT fk_condicion_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE
+);
+
+-- TABLA: MEDICAMENTOS HABITUALES DEL PACIENTE (Normalizado)
+CREATE TABLE pacientes_medicamentos (
+    id SERIAL PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    medicamento VARCHAR(150) NOT NULL,
+    dosis VARCHAR(100),
+    frecuencia VARCHAR(100),
+    CONSTRAINT fk_medicamento_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE
+);
+
+-- TABLA: USUARIOS DEL SISTEMA (Autenticación y Roles)
+CREATE TABLE usuarios (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    email VARCHAR(150) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    rol VARCHAR(20) NOT NULL CHECK (rol IN ('ADMIN', 'DOCTOR', 'PACIENTE', 'RECEPCIONISTA')),
+    doctor_id INT UNIQUE,
+    paciente_id INT UNIQUE,
+    estado BOOLEAN NOT NULL DEFAULT TRUE,
+    intentos_fallidos INT DEFAULT 0,
+    bloqueado_hasta TIMESTAMP,
+    ultimo_acceso TIMESTAMP,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_usuario_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE SET NULL,
+    CONSTRAINT fk_usuario_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE SET NULL
+);
+
+-- TABLA: DISPONIBILIDAD MÉDICA / HORARIOS DEL DOCTOR
+CREATE TABLE disponibilidad_medica (
+    id SERIAL PRIMARY KEY,
+    doctor_id INT NOT NULL,
+    dia_semana INT NOT NULL CHECK (dia_semana BETWEEN 0 AND 6), -- 0=Domingo, 1=Lunes, ..., 6=Sábado
+    hora_inicio TIME NOT NULL,
+    hora_fin TIME NOT NULL,
+    duracion_cita_minutos INT NOT NULL DEFAULT 30 CHECK (duracion_cita_minutos > 0),
+    CONSTRAINT fk_disponibilidad_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE CASCADE,
+    CONSTRAINT chk_horas_disponibilidad CHECK (hora_inicio < hora_fin)
+);
+
+-- TABLA: BLOQUEOS DE AGENDA / VACACIONES / AUSENCIAS
+CREATE TABLE bloqueos_agenda (
+    id SERIAL PRIMARY KEY,
+    doctor_id INT NOT NULL,
+    fecha_inicio TIMESTAMP NOT NULL,
+    fecha_fin TIMESTAMP NOT NULL,
+    motivo TEXT,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_bloqueo_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE CASCADE,
+    CONSTRAINT chk_fechas_bloqueo CHECK (fecha_inicio < fecha_fin)
+);
+
+-- TABLA: AGENDAMIENTO DE CITAS
+CREATE TABLE citas (
+    id SERIAL PRIMARY KEY,
+    codigo_cita VARCHAR(30) NOT NULL UNIQUE,
+    paciente_id INT NOT NULL,
+    doctor_id INT NOT NULL,
+    fecha_cita DATE NOT NULL,
+    hora_cita TIME NOT NULL,
+    duracion_minutos INT NOT NULL DEFAULT 30 CHECK (duracion_minutos > 0),
+    tipo_consulta VARCHAR(100) NOT NULL DEFAULT 'Consulta General',
+    estado VARCHAR(30) NOT NULL DEFAULT 'Pendiente' CHECK (estado IN ('Pendiente', 'Confirmada', 'En Curso', 'Completada', 'Cancelada', 'Reagendada', 'No Asistió')),
+    motivo_consulta TEXT,
+    motivo_cancelacion TEXT,
+    notas_recepcion TEXT,
+    recordatorio_enviado BOOLEAN NOT NULL DEFAULT FALSE,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_cita_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_cita_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE RESTRICT
+);
+
+-- TABLA: HISTORIAL MÉDICO / EVOLUCIÓN CLÍNICA
+CREATE TABLE historial_medico (
+    id SERIAL PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    doctor_id INT NOT NULL,
+    cita_id INT,
+    fecha_atencion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    diagnostico VARCHAR(255) NOT NULL,
+    tratamiento TEXT NOT NULL,
+    notas_evolucion TEXT,
+    -- Signos Vitales y Biometría
+    presion_arterial VARCHAR(20),
+    frecuencia_cardiaca INT CHECK (frecuencia_cardiaca > 0),
+    frecuencia_respiratoria INT CHECK (frecuencia_respiratoria > 0),
+    temperatura DECIMAL(4, 2) CHECK (temperatura BETWEEN 30.0 AND 45.0),
+    saturacion_oxigeno INT CHECK (saturacion_oxigeno BETWEEN 0 AND 100),
+    peso_kg DECIMAL(5, 2) CHECK (peso_kg > 0),
+    altura_cm DECIMAL(5, 2) CHECK (altura_cm > 0),
+    imc DECIMAL(4, 2) CHECK (imc > 0),
+    CONSTRAINT fk_historial_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE,
+    CONSTRAINT fk_historial_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_historial_cita FOREIGN KEY (cita_id) REFERENCES citas(id) ON DELETE SET NULL
+);
+
+-- TABLA: RECETAS MÉDICAS ASOCIADAS AL HISTORIAL
+CREATE TABLE recetas_medicas (
+    id SERIAL PRIMARY KEY,
+    historial_id INT NOT NULL,
+    medicamento VARCHAR(150) NOT NULL,
+    dosis VARCHAR(100) NOT NULL,
+    frecuencia VARCHAR(100) NOT NULL,
+    duracion_dias INT NOT NULL CHECK (duracion_dias > 0),
+    indicaciones TEXT,
+    CONSTRAINT fk_receta_historial FOREIGN KEY (historial_id) REFERENCES historial_medico(id) ON DELETE CASCADE
+);
+
+-- TABLA: BIBLIOTECA DE IMÁGENES POR PACIENTE
+CREATE TABLE biblioteca_imagenes (
+    id SERIAL PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    historial_id INT,
+    doctor_solicitante_id INT,
+    nombre_estudio VARCHAR(150) NOT NULL,
+    tipo_imagen VARCHAR(50) NOT NULL CHECK (tipo_imagen IN ('Radiografía', 'Ecografía', 'Resonancia Magnética', 'Tomografía', 'Laboratorio', 'Electrocardiograma', 'Otro')),
+    url_archivo TEXT NOT NULL,
+    tamano_mb DECIMAL(6, 2) CHECK (tamano_mb >= 0),
+    formato VARCHAR(20) DEFAULT 'JPG',
+    descripcion TEXT,
+    informe_radiologico TEXT,
+    fecha_estudio DATE NOT NULL,
+    fecha_subida TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_imagen_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE,
+    CONSTRAINT fk_imagen_historial FOREIGN KEY (historial_id) REFERENCES historial_medico(id) ON DELETE SET NULL,
+    CONSTRAINT fk_imagen_doctor FOREIGN KEY (doctor_solicitante_id) REFERENCES doctores(id) ON DELETE SET NULL
+);
+
+-- TABLA: FACTURACIÓN EN LÍNEA (Cabecera)
+CREATE TABLE facturacion (
+    id SERIAL PRIMARY KEY,
+    numero_factura VARCHAR(50) NOT NULL UNIQUE,
+    paciente_id INT NOT NULL,
+    doctor_id INT,
+    cita_id INT,
+    subtotal DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (subtotal >= 0),
+    impuesto DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (impuesto >= 0),
+    descuento DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (descuento >= 0),
+    total DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (total >= 0),
+    cobertura_seguro DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (cobertura_seguro >= 0),
+    monto_a_pagar DECIMAL(10, 2) NOT NULL DEFAULT 0.00 CHECK (monto_a_pagar >= 0),
+    metodo_pago VARCHAR(50) NOT NULL DEFAULT 'Efectivo' CHECK (metodo_pago IN ('Tarjeta de Crédito', 'Tarjeta de Débito', 'Efectivo', 'Transferencia Bancaria', 'Seguro Médico', 'Otro')),
+    estado VARCHAR(20) NOT NULL DEFAULT 'Pendiente' CHECK (estado IN ('Pagado', 'Pendiente', 'Anulado', 'Reembolsado')),
+    fecha_emision DATE NOT NULL DEFAULT CURRENT_DATE,
+    fecha_pago TIMESTAMP,
+    notas TEXT,
+    CONSTRAINT fk_factura_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_factura_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE SET NULL,
+    CONSTRAINT fk_factura_cita FOREIGN KEY (cita_id) REFERENCES citas(id) ON DELETE SET NULL
+);
+
+-- TABLA: DETALLES DE FACTURA (Ítems)
+CREATE TABLE detalles_factura (
+    id SERIAL PRIMARY KEY,
+    factura_id INT NOT NULL,
+    concepto VARCHAR(200) NOT NULL,
+    cantidad INT NOT NULL DEFAULT 1 CHECK (cantidad > 0),
+    precio_unitario DECIMAL(10, 2) NOT NULL CHECK (precio_unitario >= 0),
+    subtotal DECIMAL(10, 2) NOT NULL CHECK (subtotal >= 0),
+    CONSTRAINT fk_detalle_factura FOREIGN KEY (factura_id) REFERENCES facturacion(id) ON DELETE CASCADE
+);
+
+-- TABLA: ALERTAS Y NOTIFICACIONES DE CITAS
+CREATE TABLE alertas_notificaciones (
+    id SERIAL PRIMARY KEY,
+    usuario_id INT,
+    paciente_id INT,
+    doctor_id INT,
+    cita_id INT,
+    titulo VARCHAR(150) NOT NULL,
+    mensaje TEXT NOT NULL,
+    tipo VARCHAR(30) NOT NULL DEFAULT 'info' CHECK (tipo IN ('info', 'success', 'warning', 'error', 'recordatorio_cita', 'resultado_imagen', 'factura')),
+    canal_envio VARCHAR(30) NOT NULL DEFAULT 'SISTEMA' CHECK (canal_envio IN ('SISTEMA', 'EMAIL', 'SMS', 'WHATSAPP')),
+    enviado BOOLEAN NOT NULL DEFAULT FALSE,
+    leido BOOLEAN NOT NULL DEFAULT FALSE,
+    archivado BOOLEAN NOT NULL DEFAULT FALSE,
+    importante BOOLEAN NOT NULL DEFAULT FALSE,
+    fecha_programada TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_envio TIMESTAMP,
+    fecha_lectura TIMESTAMP,
+    CONSTRAINT fk_alerta_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+    CONSTRAINT fk_alerta_paciente FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE,
+    CONSTRAINT fk_alerta_doctor FOREIGN KEY (doctor_id) REFERENCES doctores(id) ON DELETE CASCADE,
+    CONSTRAINT fk_alerta_cita FOREIGN KEY (cita_id) REFERENCES citas(id) ON DELETE CASCADE
+);
+
+-- =========================================================================================
+-- 3. ÍNDICES PARA OPTIMIZACIÓN DEL RENDIMIENTO (Consultas Rápidas)
+-- =========================================================================================
+
+CREATE INDEX idx_doctores_especialidad ON doctores(especialidad_id);
+CREATE INDEX idx_pacientes_cedula ON pacientes(cedula);
+CREATE INDEX idx_pacientes_email ON pacientes(email);
+CREATE INDEX idx_citas_paciente ON citas(paciente_id);
+CREATE INDEX idx_citas_doctor_fecha ON citas(doctor_id, fecha_cita);
+CREATE INDEX idx_citas_estado ON citas(estado);
+CREATE INDEX idx_historial_paciente ON historial_medico(paciente_id);
+CREATE INDEX idx_imagenes_paciente ON biblioteca_imagenes(paciente_id);
+CREATE INDEX idx_facturacion_paciente_estado ON facturacion(paciente_id, estado);
+CREATE INDEX idx_alertas_no_leidas ON alertas_notificaciones(paciente_id, leido) WHERE leido = FALSE;
+
+-- =========================================================================================
+-- 4. DATOS DE PRUEBA / INICIALIZACIÓN (SEED DATA COMPLETO)
+-- =========================================================================================
+
+-- Especialidades
+INSERT INTO especialidades (id, nombre, descripcion, costo_base) VALUES
+(1, 'Medicina General', 'Atención integral y preventiva para adultos y niños', 45.00),
+(2, 'Pediatría', 'Atención especializada para bebés, niños y adolescentes', 55.00),
+(3, 'Cardiología', 'Diagnóstico y tratamiento del corazón y sistema circulatorio', 80.00),
+(4, 'Dermatología', 'Tratamiento de piel, cabello y uñas', 65.00),
+(5, 'Ginecología', 'Salud del sistema reproductor femenino', 70.00);
+
+
+
+
+-- Doctores Iniciales
+INSERT INTO doctores (id, cedula, nombre, apellido, especialidad_id, telefono, email, experiencia_anios, consultorio, biografia, estado) VALUES
+(1, '1712345678', 'Andrés', 'López', 1, '0991234567', 'andres.lopez@hospital.com', 8, '101A', 'Especialista en Medicina General y Familiar', 'Activo'),
+(2, '1723456789', 'María', 'Rodríguez', 2, '0998765432', 'maria.rodriguez@hospital.com', 6, '202B', 'Pediatra certificada con amplia experiencia infantil', 'Activo');
+
+-- Usuarios
+INSERT INTO usuarios (id, nombre, email, password, rol, doctor_id, paciente_id, estado) VALUES
+(1, 'Administrador Hospital', 'admin@hospital.com', '$2b$10$aAVMMMNHQPrmRgo3f/9mBO.XU8xB74Jp2HTpUs1XIvT6x6T7QgR7S', 'ADMIN', NULL, NULL, TRUE),
+(2, 'Dr. Andrés López', 'andres.lopez@hospital.com', '$2b$10$aAVMMMNHQPrmRgo3f/9mBO.XU8xB74Jp2HTpUs1XIvT6x6T7QgR7S', 'DOCTOR', 1, NULL, TRUE),
+(3, 'Dra. María Rodríguez', 'maria.rodriguez@hospital.com', '$2b$10$aAVMMMNHQPrmRgo3f/9mBO.XU8xB74Jp2HTpUs1XIvT6x6T7QgR7S', 'DOCTOR', 2, NULL, TRUE);
+
+-- Disponibilidad Médica
+INSERT INTO disponibilidad_medica (doctor_id, dia_semana, hora_inicio, hora_fin, duracion_cita_minutos) VALUES
+(1, 1, '08:00:00', '13:00:00', 30), -- Lunes
+(1, 2, '08:00:00', '13:00:00', 30), -- Martes
+(1, 3, '08:00:00', '13:00:00', 30), -- Miércoles
+(1, 4, '08:00:00', '13:00:00', 30), -- Jueves
+(1, 5, '08:00:00', '13:00:00', 30), -- Viernes
+(2, 1, '09:00:00', '16:00:00', 30),
+(2, 3, '09:00:00', '16:00:00', 30);
+
